@@ -1,0 +1,292 @@
+---
+title: "CellChat Single Dataset Introduction"
+author: "Justin Reimertz"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    smooth_scroll: false
+---
+
+```{r setup, include=FALSE, results='hide'}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+# Source main R script
+source("cellchat_main.R")
+```
+
+# Inspect the data
+Subset the single cell data using tissue, cell type, and/or time depending on 
+the required parameters for the given dataset and analysis. 
+
+## Can use one or more Seurat objects to make a CellChat object
+
+```{r}
+skull <- qread("data/skull_subset.qs")
+head(skull@meta.data)
+```
+
+# Set up CellChat Object
+Create the CellChat object including inferring the communication network using
+the appropriate database
+
+```{r, echo=FALSE, warning=FALSE}
+# Check if CellChat has already been performed for this subset of data
+if (file.exists("data/cellchat_skull_subtype.qs")) {
+  # Read in the CellChat object if the appropriate file was found
+  cc_skull <- qread("data/cellchat_skull_subtype.qs") %>%
+    set_parallel(threads=4)
+  # Read in the cell-cell communication network dataframe
+  cc_skull_net <- read_csv("data/cellchat_skull_subtype_network.csv", 
+                               show_col_types = FALSE)
+} else {
+  # Build the CellChat object using the seurat object if the file was not found
+  cc_skull <- build_cellchat(skull, "mouse") %>%
+    set_parallel(threads=8) %>%
+    # Infer the cell-cell communication network
+    infer_comm_network(type="triMean", min_cells=10)
+  # Save the inferred cell-cell communication network as a dataframe
+  cc_skull_net <- subsetCommunication(cc_skull) %T>%
+  write_csv("data/cellchat_skull_subtype_network.csv")
+}
+
+knitr::kable(head(cc_skull_net))
+```
+
+
+# Visualization of Cell-Cell Communication Network
+
+
+## Aggregated cell-cell communication network
+CellChat calculates the aggregated cell-cell communication network by counting 
+the number of links or summarizing the communication probability. Users can also 
+calculate the aggregated network among a subset of cell groups by setting 
+`sources.use` and `targets.use`.
+```{r, echo=FALSE}
+groupSize <- as.numeric(table(cc_skull@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+# Visulize number of interactions
+netVisual_circle(cc_skull@net$count, vertex.weight = groupSize, 
+                 weight.scale = T, label.edge= F, 
+                 title.name = "Number of interactions")
+# Visualize strength of interactions
+netVisual_circle(cc_skull@net$weight, vertex.weight = groupSize, 
+                 weight.scale = T, label.edge= F, 
+                 title.name = "Interaction weights/strength")
+```
+
+### Looking at specific cell interactions
+```{r}
+groupSize <- as.numeric(table(cc_skull@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+# Visulize number of interactions
+netVisual_circle(cc_skull@net$count, vertex.weight = groupSize, 
+                 weight.scale = T, label.edge= F, 
+                 sources.use = 1, targets.use = 2:7,
+                 title.name = "Number of Chond-Endo interactions")
+# Visualize strength of interactions
+netVisual_circle(cc_skull@net$count, vertex.weight = groupSize, 
+                 weight.scale = T, label.edge= F, 
+                 sources.use = 2:7, targets.use = 1,
+                 title.name = "Number of Endo-Chond interactions")
+```
+
+```{r, echo=FALSE, warning=FALSE}
+mat <- cc_skull@net$weight
+par(mfrow = c(2,2), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(
+    mat2, vertex.weight = groupSize, weight.scale = T, 
+    edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+```
+
+### All Significant Pathways
+```{r}
+# All signaling pathways showing significant communications can be accessed
+cc_skull@netP$pathways
+
+cc_skull_net %>%
+  group_by(pathway_name) %>%
+  summarize(mean(prob)) %>%
+  arrange(desc(`mean(prob)`))
+```
+
+## Looking at just the COLLAGEN Pathway
+
+```{r, echo=FALSE, warning=FALSE}
+pathways.show <- c("COLLAGEN") 
+#pathways.show <- cc_skull@netP$pathways
+
+LR_interaction <- cc_skull@LR$LRsig$interaction_name
+```
+
+### Hierarchy Plot
+```{r}
+# Hierarchy plot
+netVisual_aggregate(cc_skull, signaling = pathways.show, layout = "hierarchy",
+                    vertex.receiver = c(2:7))
+```
+
+### Circle Plot
+```{r}
+# Circle plot
+par(mfrow=c(1,1))
+netVisual_aggregate(cc_skull, signaling = pathways.show, layout = "circle")
+```
+
+### Chord Diagram
+```{r, echo=FALSE}
+# chord diagram
+netVisual_aggregate(cc_skull, signaling = pathways.show, layout = "chord")
+```
+
+### Heatmap
+```{r}
+par(mfrow=c(1,1))
+netVisual_heatmap(cc_skull, signaling = pathways.show, color.heatmap = "Reds")
+```
+
+#### Heatmap with chondrocyte to endothelial
+```{r}
+par(mfrow=c(1,1))
+netVisual_heatmap(cc_skull, signaling = pathways.show, 
+                  sources.use = c(1), 
+                  targets.use = c(2:7),
+                  color.heatmap = "Reds", remove.isolate = F)
+```
+
+### Compute the contribution of each ligand-receptor pair to the overall signaling pathway 
+```{r, echo=FALSE}
+netAnalysis_contribution(cc_skull, signaling = pathways.show)
+```
+
+# Visualize cell-cell communication mediated by multiple ligand-receptors or signaling pathways
+
+## Bubble Plot
+show all the significant interactions (L-R pairs) from some cell groups 
+(defined by 'sources.use') to other cell groups (defined by 'targets.use')
+```{r, echo=FALSE, include=FALSE, eval=FALSE}
+# Significant interactions from chondrocytes to endothelial cells involved in
+# collagen or cholesterol pathways
+netVisual_bubble(cc_skull, sources.use = 1, targets.use = 2:7, 
+                 signaling = c("COLLAGEN", "Cholesterol"),
+                 remove.isolate = F) 
+# Significant interactions from chondrocytes to endothelial cells involved in
+# collagen or cholesterol pathways
+netVisual_bubble(cc_skull, sources.use = 2:7, targets.use = 1, 
+                 signaling = c("COLLAGEN", "Cholesterol"),
+                 remove.isolate = F) 
+```
+
+## Chord Diagram
+show all the significant interactions (L-R pairs) from some cell groups 
+(defined by 'sources.use') to other cell groups (defined by 'targets.use')
+```{r}
+pdf("chond_endo_chord_diagram.pdf", width = 12, height = 12)
+netVisual_chord_gene(cc_skull, sources.use = 1, targets.use = c(2:7),
+                     lab.cex = 0.5)
+dev.off()
+```
+
+```{r}
+pdf("endo_chond_chord_diagram.pdf", width = 12, height = 12)
+netVisual_chord_gene(cc_skull, sources.use = c(2:7), targets.use = 1,
+                     lab.cex = 0.5)
+dev.off()
+```
+
+## Plot the signaling gene expression distribution
+
+```{r, echo=FALSE}
+plotGeneExpression(cc_skull, signaling = "COLLAGEN")
+plotGeneExpression(cc_skull, signaling = "Cholesterol")
+```
+
+
+# Systems analysis of cell-cell communication network
+
+## Identify signaling roles (e.g., dominant senders, receivers) of cell groups as well as the major contributing signaling
+
+### Compute and visualize the network centrality scores
+```{r, echo=FALSE, warning=FALSE}
+# Compute the network centrality scores
+cc_skull <- netAnalysis_computeCentrality(cc_skull, slot.name = "netP") 
+# the slot 'netP' means the inferred intercellular communication network of 
+# signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready 
+# identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(cc_skull, signaling = pathways.show, 
+                                  width = 8, height = 2.5, font.size = 10)
+```
+
+### Visualize dominant senders (sources) and receivers (targets) in 2D space
+```{r, echo=FALSE, warning=FALSE}
+# Signaling role analysis on the aggregated cell-cell communication network 
+# from all signaling pathways
+gg1 <- netAnalysis_signalingRole_scatter(cc_skull)
+#> Signaling role analysis on the aggregated cell-cell communication network 
+#> from all signaling pathways
+# Signaling role analysis on the cell-cell communication networks of interest
+gg2 <- netAnalysis_signalingRole_scatter(cc_skull, signaling = c("COLLAGEN", "Cholesterol"))
+#> Signaling role analysis on the cell-cell communication network from user's 
+#> input
+gg1 + gg2
+```
+
+### Identify signals contributing the most to outgoing or incoming signaling of certain cell groups
+```{r fig.width=10, fig.height=10, echo=FALSE, warning=FALSE}
+# Signaling role analysis on the aggregated cell-cell communication network 
+# from all signaling pathways
+ht1 <- netAnalysis_signalingRole_heatmap(cc_skull, height = 20, pattern = "outgoing")
+ht2 <- netAnalysis_signalingRole_heatmap(cc_skull, height = 20, pattern = "incoming")
+ht1 + ht2
+```
+
+#### Can also get the signaling role analysis on cell-cell communication netoworks of interest
+```{r echo=FALSE, warning=FALSE}
+netAnalysis_signalingRole_heatmap(cc_skull, signaling = c("COLLAGEN", "Cholesterol"))
+```
+
+## Identify global communication patterns to explore how multiple cell types and signaling pathways coordinate
+
+### Identify and visualize outgoing communication pattern of secreting cells
+```{r, echo=FALSE, eval=FALSE}
+selectK(cc_skull, pattern = "outgoing")
+```
+
+
+```{r, fig.height= 12, echo=FALSE}
+nPatterns = 3
+cc_skull <- identifyCommunicationPatterns(cc_skull, pattern = "outgoing", 
+                                          k = nPatterns, height = 18)
+# river plot
+netAnalysis_river(cc_skull, pattern = "outgoing")
+# dot plot
+netAnalysis_dot(cc_skull, pattern = "outgoing")
+```
+
+### Identify and visulaize incoming communication pattern of target cells
+```{r, echo=FALSE, eval=FALSE}
+selectK(cc_skull, pattern = "incoming")
+```
+
+
+```{r, fig.height= 12, echo=FALSE, warning=FALSE}
+nPatterns = 3
+cc_skull <- identifyCommunicationPatterns(cc_skull, pattern = "incoming", 
+                                          k = nPatterns, height = 18)
+# river plot
+netAnalysis_river(cc_skull, pattern = "incoming")
+# dot plot
+netAnalysis_dot(cc_skull, pattern = "incoming")
+```
+
+
+### Save the cellchat object
+```{r, echo=FALSE}
+qsave(cc_skull, "data/cellchat_skull_subtype.qs")
+```
